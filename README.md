@@ -1,72 +1,60 @@
-!pip install gradio pandas openai
-
-
 import os
 import json
 from datetime import datetime
 import pandas as pd
 import gradio as gr
-import openai
+from openai import OpenAI
 
+#  OpenAI Client ----------
+client = OpenAI(api_key="") 
 
-openai.api_key = "YOUR_OPENAI_API_KEY"
+#  Logs Folder ----------
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
 
-
-dataset_path = "arabic_edu_dataset.csv"
-
-data = [
-    ("ما هو التعليم؟","التعليم هو عملية نقل المعرفة والمهارات والقيم من جيل إلى آخر."),
-    ("ما هو الذكاء الاصطناعي؟","الذكاء الاصطناعي هو فرع من علوم الحاسوب يهدف إلى إنشاء أنظمة تحاكي الذكاء البشري."),
-    ("ما هو التعلم الآلي؟","التعلم الآلي هو أحد فروع الذكاء الاصطناعي يعتمد على البيانات لتعلم الأنماط."),
-    ("ما هو التعلم العميق؟","التعلم العميق هو نوع من التعلم الآلي يعتمد على الشبكات العصبية."),
-    ("ما هي الشبكة العصبية؟","الشبكة العصبية هي نموذج رياضي مستوحى من الدماغ البشري."),
-    ("ما هو الحاسوب؟","الحاسوب جهاز إلكتروني لمعالجة البيانات."),
-    ("ما هي البرمجة؟","البرمجة هي كتابة أوامر للحاسوب."),
-    ("ما هو بايثون؟","بايثون لغة سهلة وتستخدم في الذكاء الاصطناعي."),
+#  Default Dataset ----------
+DEFAULT_DATA = [
+    ("ما هو التعليم؟","التعليم هو عملية نقل المعرفة والمهارات والقيم."),
+    ("ما هو الذكاء الاصطناعي؟","فرع من علوم الحاسوب يحاكي الذكاء البشري."),
+    ("ما هو التعلم الآلي؟","أحد فروع الذكاء الاصطناعي يعتمد على البيانات."),
     ("ما هو Gradio؟","مكتبة لبناء واجهات لتطبيقات الذكاء الاصطناعي."),
     ("ما هي عاصمة مصر؟","القاهرة هي عاصمة مصر.")
 ]
 
-df = pd.DataFrame(data, columns=["question","answer"])
-df.to_csv(dataset_path, index=False, encoding="utf-8-sig")
+df = pd.DataFrame(DEFAULT_DATA, columns=["question","answer"])
 
-
-df = pd.read_csv(dataset_path)
-
-
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-
-
+# Backend Functions ----------
+def load_uploaded_dataset(file):
+    global df
+    if file:
+        df = pd.read_csv(file.name)
 
 def search_dataset(question):
     match = df[df["question"].str.contains(question, case=False, na=False)]
-    if not match.empty:
-        return match.iloc[0]["answer"]
-    return None
+    return match.iloc[0]["answer"] if not match.empty else None
 
-def call_llm(question):
-    response = openai.ChatCompletion.create(
-        model="gpt-5-mini",
-        messages=[{"role": "user", "content": question}],
-        temperature=0.5
-    )
-    return response["choices"][0]["message"]["content"]
+def generate_gpt_answer(question):
+    prompt = f"أجب باللغة العربية بإيجاز على السؤال التالي: {question}"
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=150
+        )
+        answer = response.choices[0].message.content
+        return answer
+    except Exception as e:
+        return " Error calling GPT: " + str(e)
 
 def save_history(username, question, answer):
     time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    record = {
-        "username": username,
-        "question": question,
-        "answer": answer,
-        "time": time_now
-    }
+    record = {"user": username, "question": question, "answer": answer, "time": time_now}
 
     csv_path = f"{LOG_DIR}/{username}_chat.csv"
     json_path = f"{LOG_DIR}/{username}_chat.json"
 
-    # CSV
+    # Save CSV
     pd.DataFrame([record]).to_csv(
         csv_path,
         mode="a",
@@ -75,34 +63,49 @@ def save_history(username, question, answer):
         encoding="utf-8-sig"
     )
 
-    # JSON
+    # Save JSON
     history = []
     if os.path.exists(json_path):
-        with open(json_path, "r", encoding="utf-8") as f:
-            history = json.load(f)
-
+        history = json.load(open(json_path, encoding="utf-8"))
     history.append(record)
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    json.dump(history, open(json_path,"w",encoding="utf-8"),
+              ensure_ascii=False, indent=2)
 
+# Main Assistant Function ----------
 def assistant(username, question):
     if not username.strip():
-        return " أدخل اسم المستخدم", ""
+        return " Enter username", ""
 
+    # 1. Search dataset
     answer = search_dataset(question)
-    if answer is None:
-        answer = call_llm(question)
 
+    # 2. If not in dataset, call GPT
+    if not answer:
+        answer = generate_gpt_answer(question)
+
+    # 3. Save history
     save_history(username, question, answer)
-    return answer, " تم حفظ السؤال مع التاريخ والوقت"
 
+    # 4. Return HTML with avatar
+    avatar_html = f"""
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+        <img src="https://i.ibb.co/9y0n0m6/avatar.png" width="50px" style="border-radius:50%">
+        <div style="background:#ede9fe; padding:10px; border-radius:12px;">
+            {answer}
+        </div>
+    </div>
+    """
+    return avatar_html, " Question saved with timestamp"
+
+#  Clear History ----------
 def clear_history(username):
     for ext in ["csv","json"]:
         path = f"{LOG_DIR}/{username}_chat.{ext}"
         if os.path.exists(path):
             os.remove(path)
-    return " تم حذف سجل المستخدم"
+    return " Chat history cleared"
 
+#  Download History ----------
 def download_csv(username):
     path = f"{LOG_DIR}/{username}_chat.csv"
     return path if os.path.exists(path) else None
@@ -111,37 +114,46 @@ def download_json(username):
     path = f"{LOG_DIR}/{username}_chat.json"
     return path if os.path.exists(path) else None
 
-
+# CSS ----------
 css = """
-body { background: #f5f3ff; }
-h1 { color: #6a0dad; text-align:center; }
-button { border-radius: 12px; font-size: 16px; }
+body {background: linear-gradient(to right, #ede9fe, #f5f3ff); font-family:Arial;}
+h1,h2 {color:#6a0dad;text-align:center;}
+.gr-button {border-radius:14px !important;font-size:16px !important;}
+textarea {border-radius:12px !important;}
 """
 
-
+# Gradio Frontend ----------
 with gr.Blocks(css=css) as app:
 
-    gr.Markdown("##  LLM-Based Arabic Education Assistant")
-
-    username = gr.Textbox(label=" اسم المستخدم")
-    question = gr.Textbox(label="? السؤال", lines=2)
-
-    answer = gr.Textbox(label=" الإجابة")
-    status = gr.Textbox(label=" الحالة")
+    gr.Markdown("##  LLM-Based Arabic Education Assistant with GPT ")
+    gr.Markdown("### Smart Arabic Educational Chatbot")
 
     with gr.Row():
-        ask_btn = gr.Button(" اسأل")
+        username = gr.Textbox(label=" Username")
+        dataset_file = gr.File(label=" Upload Dataset (CSV)")
+
+    dataset_file.change(load_uploaded_dataset, dataset_file, None)
+
+    question = gr.Textbox(label=" Enter your question", lines=2)
+    answer_html = gr.HTML(label=" Answer")
+    status = gr.Textbox(label=" Status")
+
+    with gr.Row():
+        ask_btn = gr.Button(" Ask")
         clear_btn = gr.Button(" Clear History")
 
     with gr.Row():
-        csv_btn = gr.Button("⬇ Download CSV")
+        csv_btn = gr.Button("⬇Download CSV")
         json_btn = gr.Button("⬇ Download JSON")
 
     file_out = gr.File()
 
-    ask_btn.click(assistant, [username, question], [answer, status])
+    ask_btn.click(assistant, [username, question], [answer_html, status])
     clear_btn.click(clear_history, username, status)
     csv_btn.click(download_csv, username, file_out)
     json_btn.click(download_json, username, file_out)
 
-app.launch()
+# Launch the app
+app.launch(share=True)  
+
+    
